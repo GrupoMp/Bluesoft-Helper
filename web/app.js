@@ -11,6 +11,7 @@ const MODO = { DADOS: 'dados', FOTOS: 'fotos' }
 const OPS = [
   { key: 'alterarNCM',      label: 'Alterar NCM',       short: 'NCM' },
   { key: 'alterarSubgrupo', label: 'Alterar Subgrupo',  short: 'Subgrupo' },
+  { key: 'alterarDescricao', label: 'Sufixo E-book',    short: 'Descrição' },
   { key: 'linhaCompra',     label: 'Linha de Compra',   short: 'Compra' },
   { key: 'linhaLoja',       label: 'Sortimento',        short: 'Sortimento' },
   { key: 'linhaCompraCD',   label: 'Linha CD',          short: 'CD' },
@@ -688,6 +689,7 @@ async function rodar({ retry, linhas }) {
     id: state.session.id,
     alterarNCM: state.ops.alterarNCM,
     alterarSubgrupo: state.ops.alterarSubgrupo,
+    alterarDescricao: state.ops.alterarDescricao,
     linhaCompra: state.ops.linhaCompra,
     linhaCompraCD: state.ops.linhaCompraCD,
     linhaLoja: state.ops.linhaLoja,
@@ -975,6 +977,20 @@ function goToDone() {
   }
 }
 
+// baixarErros exporta os erros do run atual em CSV (BOM + ";" pra abrir no Excel pt-BR).
+function baixarErros() {
+  const errs = ((state.run && state.run.errors) || []).filter(e => e.tipo === TIPO.ERRO)
+  if (errs.length === 0) return
+  const cel = v => '"' + String(v ?? '').replace(/"/g, '""') + '"'
+  const csv = '\ufeff' + [['linha', 'ean', 'operacao', 'erro'], ...errs.map(e => [e.linha || '', e.ean || '', e.op || '', e.mensagem || ''])]
+    .map(l => l.map(cel).join(';')).join('\n')
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  a.download = 'erros_' + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '') + '.csv'
+  document.body.appendChild(a); a.click(); a.remove()
+  URL.revokeObjectURL(a.href)
+}
+
 function resetUpload() {
   goToIdle()
 }
@@ -1017,7 +1033,7 @@ function toggleTheme() {
 const ACTIONS = {
   goToSetup, toggleSecret, abrirErp, cancelSetup, setupCtaClick,
   abrirModalArvore, abrirLogs, resetUpload, iniciarRun, parar,
-  reenviarErros, fecharModalArvore, baixarArvore, toggleTheme,
+  reenviarErros, fecharModalArvore, baixarArvore, toggleTheme, baixarErros,
 }
 
 function wireEvents() {

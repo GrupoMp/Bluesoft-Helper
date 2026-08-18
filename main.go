@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/blang/semver"
 	"github.com/inconshreveable/go-update"
@@ -31,7 +32,7 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-const version = "1.4.1"
+const version = "1.5.0"
 
 const fotosVMURL = "http://192.168.0.25:8000/processar-fotos"
 const arvoreVMURL = "http://192.168.0.25:8000/arvore"
@@ -79,6 +80,10 @@ type PayloadSubgrupo struct {
 	SubGrupoProduto int     `json:"subGrupoProduto"`
 	ValorMargem     float64 `json:"valorMargem"`
 	QuebraMargem    float64 `json:"quebraMargem"`
+}
+
+type PayloadDescricao struct {
+	Descricao string `json:"descricao"`
 }
 
 type ItemPreTransferencia struct {
@@ -467,6 +472,7 @@ type ProdutoLinha struct {
 	CodigoPT      int         // produtoKey direto, quando vem da coluna "codigo" do modelo PT
 	GTINPT        int         // gtin direto, quando vem da coluna "barra" do modelo PT
 	Subgrupo      int         // subGrupoProdutoKey da coluna "SUBGRUPO" — 0 = ausente
+	Descricao     string      // coluna "DESCRIÇÃO" (já com sufixo EB) — usada pela op Sufixo E-book
 }
 
 // excluida = lojas que nunca recebem parâmetro (sempre filtradas).
@@ -534,7 +540,7 @@ func lerPlanilha(caminho string) ([]ProdutoLinha, []string, string, error) {
 func lerPlanilhaFicha(rows [][]string) ([]ProdutoLinha, []string, error) {
 	header := rows[7]
 
-	eanCol, dunCol, ncmCol, subgrupoCol := -1, -1, -1, -1
+	eanCol, dunCol, ncmCol, subgrupoCol, descricaoCol := -1, -1, -1, -1, -1
 	type lojaCol struct {
 		idx  int
 		loja int
@@ -550,6 +556,8 @@ func lerPlanilhaFicha(rows [][]string) ([]ProdutoLinha, []string, error) {
 			dunCol = i
 		} else if subgrupoCol == -1 && strings.Contains(hUp, "SUBGRUPO") {
 			subgrupoCol = i
+		} else if descricaoCol == -1 && strings.Contains(hUp, "DESCRI") {
+			descricaoCol = i
 		} else if ncmCol == -1 && strings.Contains(hUp, "NCM") {
 			ncmCol = i
 		}
@@ -578,6 +586,8 @@ func lerPlanilhaFicha(rows [][]string) ([]ProdutoLinha, []string, error) {
 		expandidas       int
 		semSubgrupo      int
 		subgrupoInvalido int
+		semDescricao     int
+		descricaoLonga   int
 	}{}
 	for rowIdx, row := range rows[8:] {
 		linhaPlanilha := rowIdx + 9
@@ -614,6 +624,18 @@ func lerPlanilhaFicha(rows [][]string) ([]ProdutoLinha, []string, error) {
 				subgrupo = v
 			} else {
 				contadores.subgrupoInvalido++
+			}
+		}
+
+		descricao := ""
+		if descricaoCol >= 0 {
+			if descricaoCol < len(row) {
+				descricao = strings.TrimSpace(row[descricaoCol])
+			}
+			if descricao == "" {
+				contadores.semDescricao++
+			} else if utf8.RuneCountInString(descricao) > maxDescricao {
+				contadores.descricaoLonga++
 			}
 		}
 
@@ -664,6 +686,7 @@ func lerPlanilhaFicha(rows [][]string) ([]ProdutoLinha, []string, error) {
 			Lojas:         lojas,
 			Quantidades:   quantidades,
 			Subgrupo:      subgrupo,
+			Descricao:     descricao,
 		})
 	}
 
@@ -679,6 +702,12 @@ func lerPlanilhaFicha(rows [][]string) ([]ProdutoLinha, []string, error) {
 	}
 	if contadores.subgrupoInvalido > 0 {
 		avisos = append(avisos, fmt.Sprintf("%d linhas com SUBGRUPO não numérico — serão puladas", contadores.subgrupoInvalido))
+	}
+	if descricaoCol >= 0 && contadores.semDescricao > 0 {
+		avisos = append(avisos, fmt.Sprintf("%d linhas sem DESCRIÇÃO", contadores.semDescricao))
+	}
+	if contadores.descricaoLonga > 0 {
+		avisos = append(avisos, fmt.Sprintf("%d linhas com DESCRIÇÃO acima de %d caracteres — serão puladas", contadores.descricaoLonga, maxDescricao))
 	}
 	return result, avisos, nil
 }
@@ -842,10 +871,16 @@ func dedupInts(xs []int) []int {
 const compradorKey = 655124
 const divisaoKey = 1
 
+// maxDescricao é o limite de caracteres da descrição do produto.
+// A tela do ERP aceita 70, mas a API rejeita acima de 60
+// ("tamanho deve ser entre 0 e 60") — chamado aberto na Bluesoft.
+// ponytail: volta pra 70 se/quando responderem que a API estava errada.
+const maxDescricao = 60
+
 func processarProduto(
 	tenant, token string,
 	produto ProdutoLinha,
-	fazerLinhaCompra, fazerLinhaCompraCD, fazerLinhaLoja, fazerNCM, fazerSubgrupo bool,
+	fazerLinhaCompra, fazerLinhaCompraCD, fazerLinhaLoja, fazerNCM, fazerSubgrupo, fazerDescricao bool,
 	margens map[int]MargemSubgrupo,
 	cdTipo string,
 	rl *runLog,
@@ -879,7 +914,7 @@ func processarProduto(
 	// Linha de Compra e Sortimento sempre usam EAN 13.
 	// Linha CD em UN também usa EAN 13; em CX usa o DUN 14 (lookup separado).
 	// Alterar NCM também usa EAN 13.
-	precisaUN := fazerLinhaCompra || fazerLinhaLoja || fazerNCM || fazerSubgrupo || (fazerLinhaCompraCD && cdTipo != "CX")
+	precisaUN := fazerLinhaCompra || fazerLinhaLoja || fazerNCM || fazerSubgrupo || fazerDescricao || (fazerLinhaCompraCD && cdTipo != "CX")
 	precisaCX := fazerLinhaCompraCD && cdTipo == "CX"
 
 	var infoUN *ProdutoInfo
@@ -938,6 +973,27 @@ func processarProduto(
 				send("erro", op, fmt.Sprintf("EAN %s — %s", produto.EAN, apiErrMsg(status, body, err)))
 			} else {
 				send("ok", op, fmt.Sprintf("EAN %s → subgrupo %d (margem %.2f)", produto.EAN, produto.Subgrupo, m.ValorMargem))
+			}
+		}
+	}
+
+	// ── 0c. Sufixo E-book (descrição) ──
+	if fazerDescricao && infoUN != nil {
+		op := "Descrição"
+		n := utf8.RuneCountInString(produto.Descricao)
+		if produto.Descricao == "" {
+			send("aviso", op, fmt.Sprintf("EAN %s: DESCRIÇÃO ausente na planilha, pulando", produto.EAN))
+		} else if n > maxDescricao {
+			send("aviso", op, fmt.Sprintf("EAN %s: descrição com %d caracteres (limite %d), pulando", produto.EAN, n, maxDescricao))
+		} else {
+			ep := fmt.Sprintf("https://erp.bluesoft.com.br/%s/api/comercial/produtos/%d", tenant, infoUN.ProdutoKey)
+			payload := PayloadDescricao{Descricao: produto.Descricao}
+			status, body, err := putAPI(token, ep, payload)
+			rl.httpCall(fmt.Sprintf("Descrição | EAN %s (produto %d)", produto.EAN, infoUN.ProdutoKey), "PUT", ep, payload, status, body, err)
+			if err != nil || (status != 200 && status != 201 && status != 204) {
+				send("erro", op, fmt.Sprintf("EAN %s — %s", produto.EAN, apiErrMsg(status, body, err)))
+			} else {
+				send("ok", op, fmt.Sprintf("EAN %s → %s", produto.EAN, produto.Descricao))
 			}
 		}
 	}
@@ -1335,6 +1391,7 @@ type runOpcoes struct {
 	LinhaLoja        bool   `json:"linhaLoja"`
 	AlterarNCM       bool   `json:"alterarNCM"`
 	AlterarSubgrupo  bool   `json:"alterarSubgrupo"`
+	AlterarDescricao bool   `json:"alterarDescricao"`
 	PreTransferencia bool   `json:"preTransferencia"`
 	CdTipo           string `json:"cdTipo"`
 	LojaOrigem       int    `json:"lojaOrigem"`       // só usado quando formato=ficha + PT
@@ -1362,12 +1419,12 @@ func executaSSE(w http.ResponseWriter, r *http.Request, isRetry bool) {
 	if req.CdTipo == "" {
 		req.CdTipo = "UN"
 	}
-	if !req.LinhaCompra && !req.LinhaCompraCD && !req.LinhaLoja && !req.AlterarNCM && !req.AlterarSubgrupo && !req.PreTransferencia {
+	if !req.LinhaCompra && !req.LinhaCompraCD && !req.LinhaLoja && !req.AlterarNCM && !req.AlterarSubgrupo && !req.AlterarDescricao && !req.PreTransferencia {
 		http.Error(w, "selecione ao menos uma operação", 400)
 		return
 	}
 	// Pré-transferência é exclusiva (não combina com as outras ops no mesmo run).
-	if req.PreTransferencia && (req.LinhaCompra || req.LinhaCompraCD || req.LinhaLoja || req.AlterarNCM || req.AlterarSubgrupo) {
+	if req.PreTransferencia && (req.LinhaCompra || req.LinhaCompraCD || req.LinhaLoja || req.AlterarNCM || req.AlterarSubgrupo || req.AlterarDescricao) {
 		http.Error(w, "Pré-transferência roda sozinha — desmarque as outras operações", 400)
 		return
 	}
@@ -1463,6 +1520,9 @@ func executaSSE(w http.ResponseWriter, r *http.Request, isRetry bool) {
 	if req.AlterarSubgrupo {
 		ops = append(ops, "Alterar Subgrupo")
 	}
+	if req.AlterarDescricao {
+		ops = append(ops, "Sufixo E-book")
+	}
 	if req.LinhaCompra {
 		ops = append(ops, "Linha Compra")
 	}
@@ -1538,51 +1598,70 @@ func executaSSE(w http.ResponseWriter, r *http.Request, isRetry bool) {
 		passOneCD := !needsTwoPasses && req.LinhaCompraCD
 		passOneLoja := !needsTwoPasses && req.LinhaLoja
 
-		for i, p := range produtos {
-			select {
-			case <-localCancel:
-				emit(EventoSSE{Tipo: "aviso", Mensagem: "⛔ cancelado pelo usuário"})
-				cancelado = true
-			default:
-			}
-			if cancelado {
-				break
-			}
-			processarProduto(tenant, token, p,
-				req.LinhaCompra, passOneCD, passOneLoja, req.AlterarNCM, req.AlterarSubgrupo,
-				margens, req.CdTipo, rl, emitContando,
-			)
+		// Ops por produto (NCM/Subgrupo/Descrição) são 1 request por linha e não
+		// dependem umas das outras — rodam em paralelo. Ops de loja já abrem uma
+		// goroutine por loja lá dentro, então o passe delas fica sequencial.
+		workers := 1
+		if !req.LinhaCompra && !req.LinhaCompraCD && !req.LinhaLoja {
+			workers = 5
+		}
+
+		var feitos atomic.Int32
+		progresso := func() {
 			sendMu.Lock()
-			prog := map[string]any{"atual": i + 1, "total": totalSteps}
+			defer sendMu.Unlock()
+			prog := map[string]any{"atual": feitos.Add(1), "total": totalSteps}
 			b, _ := json.Marshal(prog)
 			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", b)
 			flusher.Flush()
-			sendMu.Unlock()
 		}
+
+		// rodarPasse aplica fn a todos os produtos com `workers` em paralelo.
+		// Devolve true se o usuário cancelou no meio.
+		rodarPasse := func(fn func(ProdutoLinha)) bool {
+			sem := make(chan struct{}, workers)
+			var wg sync.WaitGroup
+			cancel := false
+			for _, p := range produtos {
+				select {
+				case <-localCancel:
+					cancel = true
+				default:
+				}
+				if cancel {
+					break
+				}
+				sem <- struct{}{}
+				wg.Add(1)
+				go func(p ProdutoLinha) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					fn(p)
+					progresso()
+				}(p)
+			}
+			wg.Wait()
+			if cancel {
+				emit(EventoSSE{Tipo: "aviso", Mensagem: "⛔ cancelado pelo usuário"})
+			}
+			return cancel
+		}
+
+		cancelado = rodarPasse(func(p ProdutoLinha) {
+			processarProduto(tenant, token, p,
+				req.LinhaCompra, passOneCD, passOneLoja, req.AlterarNCM, req.AlterarSubgrupo, req.AlterarDescricao,
+				margens, req.CdTipo, rl, emitContando,
+			)
+		})
 
 		if !cancelado && needsTwoPasses {
 			emit(EventoSSE{Tipo: "info", Mensagem: "Linha de Compra concluída — iniciando Sortimento e Linha CD…"})
-			for i, p := range produtos {
-				select {
-				case <-localCancel:
-					emit(EventoSSE{Tipo: "aviso", Mensagem: "⛔ cancelado pelo usuário"})
-					cancelado = true
-				default:
-				}
-				if cancelado {
-					break
-				}
+			rodarPasse(func(p ProdutoLinha) {
 				processarProduto(tenant, token, p,
-					false, req.LinhaCompraCD, req.LinhaLoja, false, false,
+					false, req.LinhaCompraCD, req.LinhaLoja, false, false, false,
 					nil, req.CdTipo, rl, emitContando,
 				)
-				sendMu.Lock()
-				prog := map[string]any{"atual": len(produtos) + i + 1, "total": totalSteps}
-				b, _ := json.Marshal(prog)
-				fmt.Fprintf(w, "event: progress\ndata: %s\n\n", b)
-				flusher.Flush()
-				sendMu.Unlock()
-			}
+			})
 		}
 	}
 

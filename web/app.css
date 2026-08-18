@@ -822,7 +822,8 @@
     border-top: 1px solid var(--border);
     display: flex; align-items: center; justify-content: space-between;
   }
-  .errors-card .footer .info { font-size: 12px; color: var(--text-dim); }
+  .errors-card .footer .info { font-size: 12px; color: var(--text-dim); margin-right: auto; }
+  .errors-card .footer .btn-link { margin-right: 14px; }
 
   .pt-keys-card { padding: 20px; margin-top: 16px; }
   .pt-keys-card .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
