@@ -32,10 +32,10 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-const version = "1.5.0"
+const version = "1.5.1"
 
-const fotosVMURL = "http://192.168.0.25:8000/processar-fotos"
-const arvoreVMURL = "http://192.168.0.25:8000/arvore"
+const fotosVMURL = "http://192.168.0.25:8002/processar-fotos"
+const arvoreVMURL = "http://192.168.0.25:8002/arvore"
 
 // ─── Payloads ────────────────────────────────────────────────────────────────
 
