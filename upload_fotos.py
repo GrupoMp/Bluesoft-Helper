@@ -182,7 +182,7 @@ async def processar_fotos(arquivo: UploadFile = File(...)):
                     linhas.append((arquivo_foto, gtin, url))
                 except Exception as e:
                     gtin = gtin_por_ref.get(foto["nome_sem_extensao"])
-                    print(f"Erro ao enviar imagem do item {gtin}: {str(e)}")
+                    print(f"Erro ao enviar imagem do item {gtin}: {e!s}")
 
         # 4) escreve o CSV depois (csv.writer não é thread-safe), em ordem estável
         linhas.sort(key=lambda linha: linha[0])
@@ -284,4 +284,4 @@ if __name__ == "__main__":
     scheduler.add_job(ping, "interval", minutes=60)
     scheduler.start()
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8002)
